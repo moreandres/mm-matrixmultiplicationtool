@@ -1,0 +1,512 @@
+\documentclass[a4paper,twocolumn]{article}
+
+\usepackage{graphicx}
+\usepackage{float}
+
+\begin{document}
+
+\title{A Case Study on High Performance Matrix Multiplication}
+\author{Andr\'{e}s More - {\tt amore@hal.famaf.unc.edu.ar}}
+\date{}
+
+\twocolumn[
+  \begin{@twocolumnfalse}
+    \maketitle
+    \begin{abstract}
+      This document reviews a short case study on high performance matrix
+      multiplication. Several algorithms were implemented and contrasted
+      against a commonly used matrix multiplication library. Performance 
+      metrics including timings and performance were gathered allowing 
+      interesting graphical comparisons of the different approaches. 
+      The results showed that carefully optimized implementations are orders 
+      of magnitude above straightforward ones.
+      \\
+    \end{abstract}
+  \end{@twocolumnfalse}
+]
+
+\tableofcontents
+
+\section{Introduction}
+
+This section introduces this work and the topic under study.
+
+\subsection{This Work}
+
+This work was required to complete {\it Cluster Programming}, a course offered as part of the {\it Specialization on High Performance Computing and Grid Technology} offered at {\it Universidad Nacional de La Plata} (UNLP)\footnote{\tt http://www.info.unlp.edu.ar}.
+
+\smallskip
+
+Besides the course class-notes\footnote{\tt http://ftinetti.googlepages.com/postgrado2008}, other relevant material was consulted. This included Fernando 
+Tinetti's work \cite{ftinetti}, a discussion about architecture-aware 
+programming \cite{cpumemory} and also performance evaluation on clustered 
+systems \cite{beowulf}.
+
+\subsection{The Subject}
+
+Matrix multiplication routines are widely used in the computational sciences 
+in general, mostly for linear algebra. It is also heavily applied on 
+scientific modeling in particular.
+
+\smallskip
+
+Timing performance is the main roadblock preventing models to became more 
+complex and rich enough to match their real-world counterparts. 
+More than in other areas, architecture-optimized code run orders of magnitude 
+faster than naive implementations.
+
+\smallskip
+
+\section{Algorithms}
+
+This section surveys several intuitive matrix multiplication algorithms.
+For each approach, code samples showing their implementation are included as
+example for the reader. Square matrices will be assumed to simplify the discussion.
+
+\subsection{Simple}
+
+The formal definition of matrix multiplication is shown on equation 
+\ref{def}. Note that it only implies the final value of each element of the 
+result matrix; nothing is stated about how values are actually calculated.
+
+\begin{equation}
+(AB) _{ij} = \sum _{k=1} ^{k=n} a _{i1} b _{1j} = a _{i1} b _{1j} 
++ \ldots + a _{in} b _{nj} 
+\label{def}
+\end{equation}
+
+\smallskip
+
+The previous definition can be translated into the following C implementation.
+
+\begin{verbatim}
+for (i = 0; i < n; i++)
+  for (j = 0; j < n; j++)
+    for (k = 0; k < n; k++)
+      c[i * n + j] += 
+        a[i * n + k] * b[k * n + j];
+\end{verbatim}
+
+\subsection{Blocked}
+
+The first enhancing approach will be to apply the divide-and-conquer
+principle; it is expected that performing smaller matrix multiplications will 
+optimize the usage of the memory cache hierarchy.
+
+\smallskip
+
+The implementation of the blocking approach is shown below.
+
+\begin{verbatim}
+for (i = 0; i < n; i += bs)
+  for (j = 0; j < n; j += bs)
+    for (k = 0; k < n; k += bs)
+      block(&a[i * n + k], 
+              &b[k * n + j], 
+                &c[i * n + j], n, bs);
+\end{verbatim}
+
+Where the definition of {\tt block} is similar to the preceding approach, only
+that each block limits should be used.
+
+\begin{verbatim}
+for (i = 0; i < bs; i++)
+  for (j = 0; j < bs; j++)
+    for (k = 0; k < bs; k++)
+      c[i * n + j] += 
+        a[i * n + k] * b[k * n + j];
+\end{verbatim}
+
+Note that the algorithm assumes for simplicity that matrix size should be a 
+multiple of block size. As the best block size depends on the available cache,
+experimental results will be shown later.
+
+\subsection{Transposed}
+
+Another interesting approach taken from  \cite{cpumemory} is to transpose the 
+second matrix. In this way, half of the cache misses when iterating over the
+columns of the second matrix will be avoided. On this case, each element 
+definition is shown in equation \ref{transp}.
+
+\begin{equation}
+(AB) _{ij} = \sum a _{i1} b _{1j} ^{T} = a _{i1} b _{1j} + a _{i2} b _{2j} + ... + ab
+\label{transp}
+\end{equation}
+
+The implementation on this case is very similar to our first approach; 
+an additional step to rotate the matrix is added before the actual algorithm.
+
+\begin{verbatim}
+for (i = 0; i < n; i++)
+  for (j = 0; j < n; j++)
+    tmp[i * n + j] = b[j * n + i];
+\end{verbatim}
+
+\begin{verbatim}  
+for (i = 0; i < n; i++)
+  for (j = 0; j < n; j++)
+    for (k = 0; k < n; k++)
+      c[i * n + j] += 
+        a[i * n + k] * tmp[j * n + k];
+\end{verbatim}
+
+\subsection{BLAS Library}
+
+The Basic Linear Algebra Subprograms\footnote{\tt http://www.netlib.org/blas}
+(BLAS) routines provide standard building blocks for performing basic 
+vector and matrix operations \cite{blas}. Among its multiple routines, 
+Level 3 BLAS routines perform general matrix-matrix operations as shown on 
+equation \ref{level3}. Where $ A,B,C $ are matrices and $ \alpha, \beta $ 
+vectors.
+
+\begin{equation}
+C \leftarrow \alpha A B + \beta C
+\label{level3}
+\end{equation}
+
+\smallskip
+
+The Automatically Tuned Linear Algebra Software (ATLAS) is a state-of-the-art, open source implementation of BLAS\footnote{\tt http://math-atlas.sourceforge.net}. The library support single and multi-thread execution modes, feature that
+enable parallelism on systems with multiple processing units.
+
+\begin{verbatim}
+cblas_dgemm(CblasRowMajor,
+              CblasNoTrans,
+                CblasNoTrans,
+            n, n, n,
+            1.0, a, n,
+              b, n,
+                0.0, c, n);
+\end{verbatim}
+
+The {\tt dgemm} BLAS routine perform general matrix-matrix multiplication on 
+double floating points, and {\tt cblas\_dgemm} is a C language wrapper around 
+the Fortran implementation. 
+
+\smallskip
+
+The first three arguments define how the arrays are stored on memory and if 
+any matrix need to be transposed, then the matrix sizes and at last the 
+computation operands are provided.
+
+\section{Results}
+
+Results were gathered on a system featuring an Intel Core Duo T2400 @ 1.83GHz 
+CPU and also 2GB of DDR2 RAM memory; the software layer included a {\it Gentoo}
+system using the 2.6.24 {\it Linux} kernel and the {\it GCC} C compiler 
+version 4.1.2.
+
+\smallskip
+
+To get timings results the {\tt gettimeofday} function is used. To get the 
+quantity of the operations, the floating point operations per seconds (FLOPs) 
+unit was used.
+
+\subsection{Timings}
+
+According to the matrix multiplication definiton, each result matrix element 
+depends on the combination of a row and a column, therefore complexity will 
+be $ O(n^{3}) $.
+Although the best known theoretical algorithm is only $ O(n^{2.58}) $ 
+\cite{algorithm}; it is too complex and only useful on very large sizes, 
+not even suitable for computation on current hardware architectures.
+
+\smallskip
+
+Figures \ref{simple-timings}, \ref{block-timings}, \ref{transp-timings}, 
+\ref{blas-timings} show the timings of the simple, block, transp and BLAS 
+algorithms, respectively.
+
+\smallskip
+
+Normalised results are highlighted against the simple approach on figure 
+\ref{timings}.
+Taking the $ 8192 \times 8192 $ matrix case as example, the performance gains 
+based on the simple definition implementation is shown on table \ref{table}.
+
+\begin{figure}[H]
+  \begin{center}
+    \begin{tabular}{|c|c|c|}\hline
+      {\bf method} & {\bf seconds} & {\bf gain} \\ \hline
+      simple & 12000 & $ \times $ 1 \\ \hline
+      blocked & 8000 & $ \times $ 1.5 \\ \hline
+      transposed & 2500 & $ \times $ 5 \\ \hline
+      blocked & 500 & $ \times $ 25 \\ \hline
+    \end{tabular}
+    \caption{$ 8192 \times 8192 $ timings}
+  \end{center}
+  \label{table}
+\end{figure}
+
+\begin{center}
+  \begin{figure}[H]
+    \includegraphics[width=7cm]{simple.pdf}
+    \caption{Simple method timings}
+    \label{simple-timings}
+  \end{figure}
+\end{center}
+
+\begin{center}
+  \begin{figure}[H]
+    \includegraphics[width=7cm]{block.pdf}
+    \caption{Block method timings}
+    \label{block-timings}
+  \end{figure}
+\end{center}
+
+Figure \ref{blocksize} shows experimental results while changing the blocksize.
+The {\tt sysconf(2)} POSIX interface allows to know this value at run-time,
+using the following code snippet is enough to find out the best block size.
+
+\begin{verbatim}
+size = sizeof(double);
+cls = sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
+bs = cls / size;
+\end{verbatim}
+
+\begin{center}
+  \begin{figure}[H]
+    \includegraphics[width=7cm]{blocksize.pdf}
+    \caption{Block Size}
+    \label{blocksize}
+  \end{figure}
+\end{center}
+
+\begin{center}
+  \begin{figure}[H]
+    \includegraphics[width=7cm]{transp.pdf}
+    \caption{Transposed method timings}
+    \label{transp-timings}
+  \end{figure}
+\end{center}
+
+\begin{center}
+  \begin{figure}[H]
+    \includegraphics[width=7cm]{blas.pdf}
+    \caption{BLAS method timings}
+    \label{blas-timings}
+  \end{figure}
+\end{center}
+
+\begin{center}
+  \begin{figure}[H]
+    \includegraphics[width=7cm]{timings.pdf}
+    \caption{Timings}
+    \label{timings}
+  \end{figure}
+\end{center}
+
+\subsection{Performance}
+
+Matrix multiplication operations can be estimated using formula
+\ref{ops}, were $ n \times n $ is the size of the matrix and $ t $ the time 
+used to process it.
+
+\begin{equation}
+flops = (n ^{3} - 2 n ^{2}) / t
+\label{ops}
+\end{equation}
+
+\smallskip
+
+Figure \ref{flops-table} compares the performance of the tried approaches.
+The table below highlights overall gains.
+
+\begin{figure}[H]
+  \begin{center}
+    \begin{tabular}{|c|c|c|}\hline
+      {\bf method} & {\bf mflops} & {\bf gain} \\ \hline
+      simple & 50 & $ \times $ 1 \\ \hline
+      blocked & 150 & $ \times $ 3 \\ \hline
+      transposed & 500 & $ \times $ 10 \\ \hline
+      blas & 1500 & $ \times $ 30 \\ \hline
+    \end{tabular}
+    \caption{Average Mflops}
+  \end{center}
+  \label{flops-table}
+\end{figure}
+
+\begin{center}
+  \begin{figure}[H]
+    \includegraphics[width=7cm]{flops.pdf}
+    \caption{FLOPs Comparison}
+    \label{flops}
+  \end{figure}
+\end{center}
+
+\subsection{Memory}
+
+Equation \ref{memory}.
+The second matrix used memory is freed after being transposed.
+
+\begin{equation}
+memory = 3 \times n ^{2} \times sizeof(double)
+\label{memory}
+\end{equation}
+
+\section{Parallelism}
+
+Previous approaches were serial, this section details two parallel 
+solutions.
+
+\subsection{Multi-threading}
+
+The ATLAS library can take advantage of multiple processing units, the 
+multiplication is spread among all available cores in the system.
+
+\smallskip
+
+Figure \ref{blas-comparison} shows a comparison between serial and 
+multi-threaded BLAS executions.
+
+\begin{center}
+  \begin{figure}[H]
+    \includegraphics[width=7cm]{blas2.pdf}
+    \caption{Single vs Multi threaded BLAS}
+    \label{blas-comparison}
+  \end{figure}
+\end{center}
+
+\subsection{Message Passing Interface}
+
+The Message Passing Interface\footnote{http://www.mpi-forum.org} (MPI) 
+provides point-to-point and collective communication among a set of processes 
+distributed on a parallel system.
+
+\smallskip
+
+Similar to {\tt socket(7)} programming using the {\tt fork(2)} system call, 
+the same binary is executed multiple times, and the programmer is in charge of
+the data communication protocol to be followed. Besides the actual computing 
+of the matrix product, the code must handle the data distribution and results 
+gathering.
+
+\smallskip
+
+The data distribution is as follows: each worker process knows which $ A $ rows
+to receive and compute given its own task id, after computation results are 
+sent back to the master which is in charge of the accumulation of the results.
+
+\smallskip
+
+The master process implementation is summarized below.
+
+\begin{verbatim}
+for (i = 1; i < size; i++) {
+  MPI_Send(&a[offset * n + 0],rows * n, 
+             MPI_DOUBLE, i, 1, 0);
+  MPI_Send(&b[0], n * n, 
+             MPI_DOUBLE, i, 1, 0);
+  offset += rows;
+}
+	      
+for (i = 1; i < size; i++) {
+  offset = rows * (i - 1);
+  MPI_Recv(&c[offset * n + 0], rows * n, 
+             MPI_DOUBLE, i, 2, 0, &status)
+}
+\end{verbatim}
+
+\smallskip
+
+The worker process implementation is summarized below.
+
+\begin{verbatim}
+MPI_Recv (&a[0], rows * n, 
+          MPI_DOUBLE, 0, 1, 0, &status);
+MPI_Recv (&b[0], n * n, 
+          MPI_DOUBLE, 0, 1, 0, &status);
+
+for (k = 0; k < n; k++)
+  for (i = 0; i < rows; i++)
+    for (j = 0; j < n; j++)
+      c[i * n + k] += a[i * n + j] 
+                    * b[j * n + k];
+
+MPI_Send (&c[0], rows * n, 
+            MPI_DOUBLE, 0, 2, 0);
+\end{verbatim}
+
+\smallskip
+
+Although more intended to other types of systems \cite{beowulf}, a naive
+implementation of MPI executed over the system under test was challenging.
+Figure \ref{mpi-comparison} contains the timings gathered on such system.
+
+\begin{center}
+  \begin{figure}[H]
+    \includegraphics[width=7cm]{mpi.pdf}
+    \caption{MPI timings according to quantity}
+    \label{mpi-comparison}
+  \end{figure}
+\end{center}
+
+\section{Conclusions}
+
+Libraries are far better optimized, their outstanding performance against mere
+mortals implementations are unbelievable.
+
+\smallskip
+
+Binaries should be cache aware, as performance is highly dependant on this.
+Otherwise, recompilation will be needed.
+
+\smallskip
+
+Theorical approaches needs to be reviewed before the actual implementation, as
+the underlaying architecture can alter common assumptions.
+
+\smallskip
+
+Parallel programming is only hard, not impossible.
+
+\appendix
+\section{The {\tt mm} tool}
+
+A command line tool was implemented from scratch to gather timings and 
+performance metrics of different methods of matrix multiplication\footnote{\tt http://code.google.com/p/mm-matrixmultiplicationtool}. Serial and parallel programming approaches were included in order to analyze scaling and speed up.
+
+\smallskip
+
+The tool used to gather all the results was made available under the GPLv2
+license. Hopefully, it will help to understand high performance computing 
+issues.
+
+\smallskip
+
+\subsection{Design}
+
+The source code is divided into files as shown in table.
+
+\smallskip
+
+Reuse of open source software was done. glibc' Argp for GNU-like argument 
+parsing. The autotools (autoconf, automake and libtool) set for building a 
+portable source code package, easy of extract, compile and install on any 
+supported system. 
+
+\subsection{Usage}
+
+The tool support many method for matrix multiplication, square matrixes are
+randomly initialized and then multiplied using the requested approach.
+
+\smallskip
+
+The arguments accepted include matrix size and the method to apply, optionally
+a check using best known implementation can be used, and also an specific block
+size can be requested.
+
+\smallskip
+
+The output reported is enough to be processed as a comma-separated value (CSV).
+Each execution reports the following data: {\tt method,size,time,mflops,block,processes}.
+
+\begin{verbatim}
+$ mm 8192 cblas --check
+cblas,8192,702.911549,1564.129257,8,1
+\end{verbatim}
+
+\bibliographystyle{unsrt}
+\bibliography{mm}
+
+\end{document}
